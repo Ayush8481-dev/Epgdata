@@ -19,7 +19,7 @@ jobs:
       # Catches all parts from 001 to 011 in alphanumeric order and merges them
       - name: Concatenate Parts
         run: |
-          cat Catchup.xml.part* > mergedcatchup.xml
+          cat Catchup.xml.part* > catchup.xml
 
       - name: Commit and Push Merged XML
         run: |
