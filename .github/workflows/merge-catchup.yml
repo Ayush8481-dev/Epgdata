@@ -21,10 +21,14 @@ jobs:
         run: |
           cat Catchup.xml.part* > catchup.xml
 
+      - name: Compress to GZIP
+        run: |
+          gzip -9 -c catchup.xml > catchup.xml.gz
+
       - name: Commit and Push Merged XML
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@://github.com"
-          git add mergedcatchup.xml
-          git commit -m "chore: auto-merge catchup parts [skip ci]" || echo "No changes to commit"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add catchup.xml.gz
+          git commit -m "auto update epg [skip ci]" || echo "No changes to commit"
           git push
