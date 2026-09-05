@@ -21,12 +21,14 @@ jobs:
       # Debug: List all files and their sizes
       - name: List all parts
         run: |
-          echo "All Catchup files:"
-          ls -lh Catchup.xml.part* || echo "No files found!"
+          echo "Current directory:"
+          pwd
+          echo "All files in directory:"
+          ls -la
+          echo "Catchup files:"
+          ls -lh Catchup.xml.part* 2>/dev/null || echo "No Catchup files found!"
           echo "Total number of parts:"
           ls Catchup.xml.part* 2>/dev/null | wc -l
-          echo "Total size of all parts:"
-          du -ch Catchup.xml.part* | tail -1
 
       # Merge parts in exact order
       - name: Concatenate Parts
@@ -42,11 +44,20 @@ jobs:
           
           if [ $missing -eq 1 ]; then
             echo "Cannot proceed - missing parts!"
+            echo "Available files:"
+            ls -la Catchup* 2>/dev/null || echo "No Catchup files at all"
             exit 1
           fi
           
           echo "All parts found. Merging..."
           cat Catchup.xml.part001 Catchup.xml.part002 Catchup.xml.part003 Catchup.xml.part004 Catchup.xml.part005 Catchup.xml.part006 Catchup.xml.part007 Catchup.xml.part008 Catchup.xml.part009 Catchup.xml.part010 Catchup.xml.part011 > catchup.xml
+          
+          if [ $? -eq 0 ]; then
+            echo "Merge successful!"
+          else
+            echo "Merge failed!"
+            exit 1
+          fi
           
           echo "Merged file size:"
           ls -lh catchup.xml
@@ -56,15 +67,27 @@ jobs:
       # Compress to gzip
       - name: Compress to GZIP
         run: |
-          gzip -9 catchup.xml
-          echo "Compressed file size:"
-          ls -lh catchup.xml.gz
+          if [ -f catchup.xml ]; then
+            gzip -9 catchup.xml
+            echo "Compression successful!"
+            echo "Compressed file size:"
+            ls -lh catchup.xml.gz
+          else
+            echo "ERROR: catchup.xml does not exist!"
+            exit 1
+          fi
 
       # Commit and push
       - name: Commit and Push Merged XML
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add catchup.xml.gz
-          git commit -m "auto update epg [skip ci]" || echo "No changes to commit"
-          git push
+          if [ -f catchup.xml.gz ]; then
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git add catchup.xml.gz
+            git status
+            git commit -m "auto update epg [skip ci]" || echo "No changes to commit"
+            git push
+          else
+            echo "ERROR: catchup.xml.gz was not created!"
+            exit 1
+          fi
