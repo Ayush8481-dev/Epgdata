@@ -34,8 +34,13 @@ jobs:
           import re
           import glob
           import gzip
+          import lzma
+          import bz2
+          import zlib
           from datetime import datetime, timedelta
           from collections import OrderedDict
+          from xml.dom import minidom
+          import xml.etree.ElementTree as ET
 
           def read_channel_ids():
               """Read channel IDs from channels.txt file"""
@@ -43,23 +48,24 @@ jobs:
               if os.path.exists('channels.txt'):
                   with open('channels.txt', 'r', encoding='utf-8') as f:
                       content = f.read()
-                      
+                  
                   # Extract channel IDs from format {id1, id2, id3}
-                  match = re.search(r'\{([^}]+)\}', content)
+                  match = re.search(r'\{([^}]+)\}', content, re.DOTALL)
                   if match:
                       ids_str = match.group(1)
-                      channel_ids = [x.strip() for x in ids_str.split(',') if x.strip()]
+                      # Clean and split by comma or whitespace
+                      channel_ids = [x.strip() for x in re.split(r'[,\s]+', ids_str) if x.strip()]
                   
                   # Also support one per line format
                   if not channel_ids:
                       for line in content.split('\n'):
                           line = line.strip()
-                          if line and not line.startswith('#') and not line.startswith('{'):
+                          if line and not line.startswith('#') and not line.startswith('{') and not line.startswith('}'):
                               channel_ids.append(line)
               
               # Default channels if file not found or empty
               if not channel_ids:
-                  channel_ids = ["951", "952", "953"]  # Add your default channel IDs
+                  channel_ids = ["951", "952", "953"]
               
               return channel_ids
 
@@ -80,27 +86,121 @@ jobs:
               programme_pattern = r'<programme[^>]*>(.*?)</programme>'
               for match in re.finditer(programme_pattern, content, re.DOTALL):
                   prog_xml = match.group(0)
-                  # Extract channel ID
                   channel_match = re.search(r'channel="([^"]+)"', prog_xml)
                   if channel_match:
+                      start_match = re.search(r'start="([^"]+)"', prog_xml)
                       programmes.append({
                           'channel': channel_match.group(1),
                           'xml': prog_xml,
-                          'start': re.search(r'start="([^"]+)"', prog_xml).group(1) if re.search(r'start="([^"]+)"', prog_xml) else ''
+                          'start': start_match.group(1) if start_match else ''
                       })
               
               return channels, programmes
 
+          def optimize_xml_size(xml_content):
+              """Optimize XML for maximum compression"""
+              # Remove unnecessary whitespace between tags
+              xml_content = re.sub(r'>\s+<', '><', xml_content)
+              
+              # Remove leading/trailing whitespace in text content
+              xml_content = re.sub(r'>\s+', '>', xml_content)
+              xml_content = re.sub(r'\s+<', '<', xml_content)
+              
+              # Remove empty lines
+              xml_content = re.sub(r'\n\s*\n', '\n', xml_content)
+              
+              # Compact channel and programme tags
+              xml_content = re.sub(r'\s+', ' ', xml_content)
+              
+              return xml_content
+
+          def compress_with_best_method(data):
+              """Try different compression methods and return the smallest"""
+              methods = {}
+              
+              # GZIP with different levels
+              for level in [9]:
+                  methods[f'gzip_{level}'] = gzip.compress(data, compresslevel=level, mtime=0)
+              
+              # BZ2
+              methods['bz2'] = bz2.compress(data, compresslevel=9)
+              
+              # LZMA/XZ
+              methods['xz'] = lzma.compress(data, preset=9 | lzma.PRESET_EXTREME)
+              
+              # ZLIB
+              methods['zlib'] = zlib.compress(data, level=9)
+              
+              # Find best compression
+              best_method = min(methods.items(), key=lambda x: len(x[1]))
+              
+              return best_method[0], best_method[1]
+
+          def write_compressed_file(xml_content, output_path):
+              """Write compressed file with best compression method"""
+              # Optimize XML first
+              optimized_xml = optimize_xml_size(xml_content)
+              
+              # Convert to bytes
+              xml_bytes = optimized_xml.encode('utf-8')
+              
+              # Get best compression
+              method, compressed_data = compress_with_best_method(xml_bytes)
+              
+              # Write compressed file
+              with open(output_path, 'wb') as f:
+                  f.write(compressed_data)
+              
+              # Calculate compression ratio
+              original_size = len(xml_bytes)
+              compressed_size = len(compressed_data)
+              ratio = (1 - compressed_size / original_size) * 100
+              
+              return {
+                  'method': method,
+                  'original_size': original_size,
+                  'compressed_size': compressed_size,
+                  'ratio': ratio
+              }
+
+          def build_xml(channels, programmes):
+              """Build optimized XML content"""
+              # Sort programmes by start time
+              programmes.sort(key=lambda x: x['start'])
+              
+              # Build XML manually for minimum size
+              xml_parts = []
+              xml_parts.append('<?xml version="1.0" encoding="UTF-8"?>')
+              xml_parts.append('<tv>')
+              
+              # Add channels (already in order)
+              for ch_xml in channels.values():
+                  # Optimize channel XML
+                  ch_optimized = re.sub(r'\s+', ' ', ch_xml.strip())
+                  xml_parts.append(ch_optimized)
+              
+              # Add programmes
+              for prog in programmes:
+                  # Optimize programme XML
+                  prog_optimized = re.sub(r'\s+', ' ', prog['xml'].strip())
+                  xml_parts.append(prog_optimized)
+              
+              xml_parts.append('</tv>')
+              
+              return '\n'.join(xml_parts)
+
           def main():
-              print("=" * 60)
-              print("EPG SMART MERGER")
-              print("=" * 60)
+              print("=" * 70)
+              print("EPG SMART MERGER - MAXIMUM COMPRESSION")
+              print("=" * 70)
               
               # Read channel IDs
               channel_ids = read_channel_ids()
               print(f"\n✓ Loaded {len(channel_ids)} channel IDs for back dates:")
-              for ch_id in channel_ids:
+              for ch_id in channel_ids[:10]:  # Show first 10
                   print(f"  • Channel {ch_id}")
+              if len(channel_ids) > 10:
+                  print(f"  • ... and {len(channel_ids) - 10} more")
               
               # Generate dates
               today = datetime.now().date()
@@ -119,8 +219,11 @@ jobs:
               print(f"  Tomorrow: {tomorrow_str}")
               
               # Storage for merged data
-              merged_channels = OrderedDict()
-              merged_programmes = []
+              full_channels = OrderedDict()  # All channels for full EPG
+              full_programmes = []  # All programmes for full EPG
+              
+              live_channels = OrderedDict()  # All channels for live EPG
+              live_programmes = []  # Programmes for live EPG (today + tomorrow)
               
               stats = {
                   'back_files': 0,
@@ -132,9 +235,9 @@ jobs:
               }
               
               # Process back dates (filtered)
-              print("\n" + "=" * 60)
+              print("\n" + "=" * 70)
               print("📂 PROCESSING BACK DATES (FILTERED CHANNELS)")
-              print("=" * 60)
+              print("=" * 70)
               
               for date_str in back_dates:
                   files = sorted(glob.glob(f"Epg/{date_str}-*.xml"))
@@ -154,14 +257,14 @@ jobs:
                           # Add only selected channels
                           for ch_id in channel_ids:
                               if ch_id in channels:
-                                  if ch_id not in merged_channels:
-                                      merged_channels[ch_id] = channels[ch_id]
+                                  if ch_id not in full_channels:
+                                      full_channels[ch_id] = channels[ch_id]
                                       print(f"    ✓ Added channel {ch_id}")
                                   
                                   # Add programmes for this channel
                                   for prog in programmes:
                                       if prog['channel'] == ch_id:
-                                          merged_programmes.append(prog)
+                                          full_programmes.append(prog)
                                           stats['back_programmes'] += 1
                           
                           print(f"    ✓ Processed {os.path.basename(file_path)}")
@@ -169,9 +272,9 @@ jobs:
                           print(f"    ✗ Error: {e}")
               
               # Process today (all channels)
-              print("\n" + "=" * 60)
+              print("\n" + "=" * 70)
               print("📂 PROCESSING TODAY (ALL CHANNELS)")
-              print("=" * 60)
+              print("=" * 70)
               
               today_files = sorted(glob.glob(f"Epg/{today_str}-*.xml"))
               if today_files:
@@ -183,14 +286,17 @@ jobs:
                           channels, programmes = parse_epg_content(content)
                           stats['today_files'] += 1
                           
-                          # Add all channels
+                          # Add all channels to both full and live
                           for ch_id, ch_xml in channels.items():
-                              if ch_id not in merged_channels:
-                                  merged_channels[ch_id] = ch_xml
+                              if ch_id not in full_channels:
+                                  full_channels[ch_id] = ch_xml
+                              if ch_id not in live_channels:
+                                  live_channels[ch_id] = ch_xml
                           
-                          # Add all programmes
+                          # Add all programmes to both full and live
                           for prog in programmes:
-                              merged_programmes.append(prog)
+                              full_programmes.append(prog)
+                              live_programmes.append(prog)
                               stats['today_programmes'] += 1
                           
                           print(f"    ✓ Processed {os.path.basename(file_path)}")
@@ -201,9 +307,9 @@ jobs:
                   print(f"  ⚠️ No files found for today")
               
               # Process tomorrow (all channels)
-              print("\n" + "=" * 60)
+              print("\n" + "=" * 70)
               print("📂 PROCESSING TOMORROW (ALL CHANNELS)")
-              print("=" * 60)
+              print("=" * 70)
               
               tomorrow_files = sorted(glob.glob(f"Epg/{tomorrow_str}-*.xml"))
               if tomorrow_files:
@@ -215,14 +321,17 @@ jobs:
                           channels, programmes = parse_epg_content(content)
                           stats['tomorrow_files'] += 1
                           
-                          # Add all channels
+                          # Add all channels to both full and live
                           for ch_id, ch_xml in channels.items():
-                              if ch_id not in merged_channels:
-                                  merged_channels[ch_id] = ch_xml
+                              if ch_id not in full_channels:
+                                  full_channels[ch_id] = ch_xml
+                              if ch_id not in live_channels:
+                                  live_channels[ch_id] = ch_xml
                           
-                          # Add all programmes
+                          # Add all programmes to both full and live
                           for prog in programmes:
-                              merged_programmes.append(prog)
+                              full_programmes.append(prog)
+                              live_programmes.append(prog)
                               stats['tomorrow_programmes'] += 1
                           
                           print(f"    ✓ Processed {os.path.basename(file_path)}")
@@ -232,53 +341,50 @@ jobs:
               else:
                   print(f"  ⚠️ No files found for tomorrow")
               
-              # Generate output
-              print("\n" + "=" * 60)
-              print("📝 GENERATING OUTPUT")
-              print("=" * 60)
+              # Generate outputs
+              print("\n" + "=" * 70)
+              print("📝 GENERATING OUTPUT FILES")
+              print("=" * 70)
               
-              if not merged_programmes:
-                  print("❌ ERROR: No programmes found!")
-                  sys.exit(1)
+              # Build Full EPG
+              if full_programmes:
+                  print("\n📦 Building Full EPG (back dates + today + tomorrow)...")
+                  full_xml = build_xml(full_channels, full_programmes)
+                  
+                  # Compress with best method
+                  full_result = write_compressed_file(full_xml, 'Epg.xml.gz')
+                  
+                  print(f"  ✓ Full EPG compressed!")
+                  print(f"    Method: {full_result['method']}")
+                  print(f"    Original: {full_result['original_size']:,} bytes")
+                  print(f"    Compressed: {full_result['compressed_size']:,} bytes")
+                  print(f"    Ratio: {full_result['ratio']:.1f}%")
+              else:
+                  print("❌ No programmes for Full EPG!")
               
-              # Sort programmes by start time
-              merged_programmes.sort(key=lambda x: x['start'])
-              
-              # Build final XML
-              xml_lines = []
-              xml_lines.append('<?xml version="1.0" encoding="UTF-8"?>')
-              xml_lines.append('<tv>')
-              
-              # Add channels
-              for ch_xml in merged_channels.values():
-                  xml_lines.append(ch_xml)
-              
-              # Add programmes
-              for prog in merged_programmes:
-                  xml_lines.append(prog['xml'])
-              
-              # Close TV tag
-              xml_lines.append('</tv>')
-              
-              # Write output file
-              output = '\n'.join(xml_lines)
-              
-              with open('Epg.xml', 'w', encoding='utf-8') as f:
-                  f.write(output)
-              
-              # Compress
-              with open('Epg.xml', 'rb') as f_in:
-                  with gzip.open('Epg.xml.gz', 'wb', compresslevel=9) as f_out:
-                      f_out.write(f_in.read())
+              # Build Live EPG (today + tomorrow only)
+              if live_programmes:
+                  print("\n📦 Building Live EPG (today + tomorrow only)...")
+                  live_xml = build_xml(live_channels, live_programmes)
+                  
+                  # Compress with best method
+                  live_result = write_compressed_file(live_xml, 'LiveEpg.xml.gz')
+                  
+                  print(f"  ✓ Live EPG compressed!")
+                  print(f"    Method: {live_result['method']}")
+                  print(f"    Original: {live_result['original_size']:,} bytes")
+                  print(f"    Compressed: {live_result['compressed_size']:,} bytes")
+                  print(f"    Ratio: {live_result['ratio']:.1f}%")
+              else:
+                  print("❌ No programmes for Live EPG!")
               
               # Print summary
-              print(f"\n{'=' * 60}")
+              print(f"\n{'=' * 70}")
               print("✅ MERGE SUMMARY")
-              print(f"{'=' * 60}")
+              print(f"{'=' * 70}")
               print(f"Back dates (filtered):")
               print(f"  Files: {stats['back_files']}")
               print(f"  Programmes: {stats['back_programmes']}")
-              print(f"  Channels: {len([ch for ch in merged_channels if ch in channel_ids])}")
               
               print(f"\nToday (all channels):")
               print(f"  Files: {stats['today_files']}")
@@ -288,26 +394,19 @@ jobs:
               print(f"  Files: {stats['tomorrow_files']}")
               print(f"  Programmes: {stats['tomorrow_programmes']}")
               
-              print(f"\nTotal:")
-              print(f"  Channels: {len(merged_channels)}")
-              print(f"  Programmes: {len(merged_programmes)}")
-              print(f"  File size: {os.path.getsize('Epg.xml.gz'):,} bytes")
+              print(f"\n📁 Output Files:")
+              if os.path.exists('Epg.xml.gz'):
+                  size = os.path.getsize('Epg.xml.gz')
+                  print(f"  Epg.xml.gz: {size:,} bytes ({size/1024/1024:.2f} MB)")
+              if os.path.exists('LiveEpg.xml.gz'):
+                  size = os.path.getsize('LiveEpg.xml.gz')
+                  print(f"  LiveEpg.xml.gz: {size:,} bytes ({size/1024/1024:.2f} MB)")
               
-              # Validation
               print(f"\n🔍 Validation:")
-              print(f"  XML declaration: {'✓' if output.startswith('<?xml') else '✗'}")
-              print(f"  <tv> tag: {'✓' if '<tv>' in output else '✗'}")
-              print(f"  </tv> tag: {'✓' if '</tv>' in output else '✗'}")
-              print(f"  Programme blocks: {output.count('<programme')}")
-              print(f"  Channel blocks: {output.count('<channel')}")
-              
-              # Check for duplicate channels
-              channel_count_check = len(re.findall(r'<channel id="([^"]+)"', output))
-              unique_channels = len(set(re.findall(r'<channel id="([^"]+)"', output)))
-              if channel_count_check == unique_channels:
-                  print(f"  No duplicate channels: ✓")
-              else:
-                  print(f"  ⚠️ Duplicate channels found: {channel_count_check - unique_channels}")
+              print(f"  Full EPG channels: {len(full_channels)}")
+              print(f"  Full EPG programmes: {len(full_programmes)}")
+              print(f"  Live EPG channels: {len(live_channels)}")
+              print(f"  Live EPG programmes: {len(live_programmes)}")
 
           if __name__ == "__main__":
               main()
@@ -317,16 +416,17 @@ jobs:
 
       - name: Commit and Push
         run: |
-          if [ -f Epg.xml.gz ]; then
-            # Clean up temporary files
-            rm -f merge_epg.py Epg.xml
-            
+          # Clean up temporary files
+          rm -f merge_epg.py Epg.xml LiveEpg.xml
+          
+          # Check if files exist
+          if [ -f Epg.xml.gz ] && [ -f LiveEpg.xml.gz ]; then
             # Configure git
             git config --global user.name "github-actions[bot]"
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
             
-            # Stage the compressed file
-            git add Epg.xml.gz
+            # Stage the compressed files
+            git add Epg.xml.gz LiveEpg.xml.gz
             
             # Check if there are changes
             if git diff --cached --quiet; then
@@ -338,9 +438,20 @@ jobs:
             fi
             
             echo ""
-            echo "Final output:"
-            ls -lh Epg.xml.gz
+            echo "Final output files:"
+            ls -lh Epg.xml.gz LiveEpg.xml.gz
+            
+            # Show compression details
+            echo ""
+            echo "File sizes:"
+            du -h Epg.xml.gz LiveEpg.xml.gz
           else
-            echo "❌ ERROR: Epg.xml.gz was not created!"
+            echo "❌ ERROR: Output files were not created!"
+            if [ ! -f Epg.xml.gz ]; then
+              echo "  Missing: Epg.xml.gz"
+            fi
+            if [ ! -f LiveEpg.xml.gz ]; then
+              echo "  Missing: LiveEpg.xml.gz"
+            fi
             exit 1
           fi
