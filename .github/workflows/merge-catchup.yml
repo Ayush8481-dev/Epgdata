@@ -15,16 +15,52 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Merges all 11 parts in order from 001 to 011
+      # Debug: List all files and their sizes
+      - name: List all parts
+        run: |
+          echo "All Catchup files:"
+          ls -lh Catchup.xml.part* || echo "No files found!"
+          echo "Total number of parts:"
+          ls Catchup.xml.part* 2>/dev/null | wc -l
+          echo "Total size of all parts:"
+          du -ch Catchup.xml.part* | tail -1
+
+      # Merge parts in exact order
       - name: Concatenate Parts
         run: |
+          # Verify all parts exist before merging
+          missing=0
+          for i in 001 002 003 004 005 006 007 008 009 010 011; do
+            if [ ! -f "Catchup.xml.part$i" ]; then
+              echo "ERROR: Catchup.xml.part$i is missing!"
+              missing=1
+            fi
+          done
+          
+          if [ $missing -eq 1 ]; then
+            echo "Cannot proceed - missing parts!"
+            exit 1
+          fi
+          
+          echo "All parts found. Merging..."
           cat Catchup.xml.part001 Catchup.xml.part002 Catchup.xml.part003 Catchup.xml.part004 Catchup.xml.part005 Catchup.xml.part006 Catchup.xml.part007 Catchup.xml.part008 Catchup.xml.part009 Catchup.xml.part010 Catchup.xml.part011 > catchup.xml
+          
+          echo "Merged file size:"
+          ls -lh catchup.xml
+          echo "File line count:"
+          wc -l catchup.xml
 
+      # Compress to gzip
       - name: Compress to GZIP
         run: |
-          gzip -9 -c catchup.xml > catchup.xml.gz
+          gzip -9 catchup.xml
+          echo "Compressed file size:"
+          ls -lh catchup.xml.gz
 
+      # Commit and push
       - name: Commit and Push Merged XML
         run: |
           git config --global user.name "github-actions[bot]"
