@@ -1,4 +1,4 @@
-name: Merge Dynamic EPG Files
+name: Merge EPG Smart
 
 on:
   schedule:
@@ -6,13 +6,14 @@ on:
   push:
     paths:
       - 'Epg/*.xml'
+      - 'channels.txt'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  merge-epg-files:
+  merge-epg:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -20,130 +21,326 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Display EPG files
-        run: |
-          echo "=== EPG Files in Repository ==="
-          find Epg/ -name "*.xml" -type f -size +0 | sort || echo "No EPG files found!"
-          echo "Total files: $(find Epg/ -name '*.xml' -type f -size +0 | wc -l)"
-          
-          if [ -f Epg.xml.gz ]; then
-            echo "Existing Epg.xml.gz size: $(du -h Epg.xml.gz | cut -f1)"
-          fi
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
 
       - name: Merge EPG Files
         run: |
-          set -e  # Exit on error
-          
-          # Clean up any existing temp files
-          rm -f temp_merged.xml Epg.xml
-          
-          # Calculate dates
-          echo "=== Calculating Date Range ==="
-          dates_to_merge=()
-          
-          # Previous 9 days (from oldest to newest)
-          for i in $(seq 9 -1 1); do
-            dates_to_merge+=("$(date -d "-$i days" +%Y-%m-%d)")
-          done
-          
-          # Today
-          dates_to_merge+=("$(date +%Y-%m-%d)")
-          
-          # Tomorrow
-          dates_to_merge+=("$(date -d "+1 day" +%Y-%m-%d)")
-          
-          echo "Date range: ${dates_to_merge[0]} to ${dates_to_merge[-1]}"
-          echo "Total days to process: ${#dates_to_merge[@]}"
-          
-          # Merge files
-          echo "=== Merging Files ==="
-          total_files=0
-          
-          for date_val in "${dates_to_merge[@]}"; do
-            echo ""
-            echo "--- Processing $date_val ---"
-            
-            # Find all files for this date (sorted)
-            mapfile -t day_files < <(find Epg/ -name "${date_val}-*.xml" -type f -size +0 | sort)
-            
-            if [ ${#day_files[@]} -gt 0 ]; then
-              echo "Found ${#day_files[@]} file(s):"
-              for file in "${day_files[@]}"; do
-                file_size=$(du -h "$file" | cut -f1)
-                echo "  ✓ $file ($file_size)"
-                cat "$file" >> temp_merged.xml
-                total_files=$((total_files + 1))
-              done
-            else
-              echo "  ✗ No files found for $date_val"
-            fi
-          done
-          
-          echo ""
-          echo "=== Merge Summary ==="
-          echo "Total files merged: $total_files"
-          
-          if [ $total_files -eq 0 ]; then
-            echo "❌ ERROR: No files were merged!"
-            exit 1
-          fi
-          
-          # Move temp file to final name
-          mv temp_merged.xml Epg.xml
-          
-          echo "✓ Merged file created:"
-          ls -lh Epg.xml
-          echo "Lines: $(wc -l < Epg.xml)"
+          cat > merge_epg.py << 'PYTHON_EOF'
+          import os
+          import sys
+          import re
+          import glob
+          import gzip
+          from datetime import datetime, timedelta
+          from collections import OrderedDict
 
-      - name: Compress EPG
-        run: |
-          echo "=== Compressing ==="
-          if [ ! -f Epg.xml ]; then
-            echo "❌ ERROR: Epg.xml not found!"
-            exit 1
-          fi
+          def read_channel_ids():
+              """Read channel IDs from channels.txt file"""
+              channel_ids = []
+              if os.path.exists('channels.txt'):
+                  with open('channels.txt', 'r', encoding='utf-8') as f:
+                      content = f.read()
+                      
+                  # Extract channel IDs from format {id1, id2, id3}
+                  match = re.search(r'\{([^}]+)\}', content)
+                  if match:
+                      ids_str = match.group(1)
+                      channel_ids = [x.strip() for x in ids_str.split(',') if x.strip()]
+                  
+                  # Also support one per line format
+                  if not channel_ids:
+                      for line in content.split('\n'):
+                          line = line.strip()
+                          if line and not line.startswith('#') and not line.startswith('{'):
+                              channel_ids.append(line)
+              
+              # Default channels if file not found or empty
+              if not channel_ids:
+                  channel_ids = ["951", "952", "953"]  # Add your default channel IDs
+              
+              return channel_ids
+
+          def parse_epg_content(content):
+              """Parse EPG XML content and extract channels and programmes"""
+              channels = OrderedDict()
+              programmes = []
+              
+              # Extract all channel blocks
+              channel_pattern = r'<channel id="([^"]+)"[^>]*>(.*?)</channel>'
+              for match in re.finditer(channel_pattern, content, re.DOTALL):
+                  channel_id = match.group(1)
+                  channel_xml = match.group(0)
+                  if channel_id not in channels:
+                      channels[channel_id] = channel_xml
+              
+              # Extract all programme blocks
+              programme_pattern = r'<programme[^>]*>(.*?)</programme>'
+              for match in re.finditer(programme_pattern, content, re.DOTALL):
+                  prog_xml = match.group(0)
+                  # Extract channel ID
+                  channel_match = re.search(r'channel="([^"]+)"', prog_xml)
+                  if channel_match:
+                      programmes.append({
+                          'channel': channel_match.group(1),
+                          'xml': prog_xml,
+                          'start': re.search(r'start="([^"]+)"', prog_xml).group(1) if re.search(r'start="([^"]+)"', prog_xml) else ''
+                      })
+              
+              return channels, programmes
+
+          def main():
+              print("=" * 60)
+              print("EPG SMART MERGER")
+              print("=" * 60)
+              
+              # Read channel IDs
+              channel_ids = read_channel_ids()
+              print(f"\n✓ Loaded {len(channel_ids)} channel IDs for back dates:")
+              for ch_id in channel_ids:
+                  print(f"  • Channel {ch_id}")
+              
+              # Generate dates
+              today = datetime.now().date()
+              
+              # Back dates (9 days)
+              back_dates = []
+              for i in range(9, 0, -1):
+                  back_dates.append((today - timedelta(days=i)).strftime('%Y-%m-%d'))
+              
+              today_str = today.strftime('%Y-%m-%d')
+              tomorrow_str = (today + timedelta(days=1)).strftime('%Y-%m-%d')
+              
+              print(f"\n📅 Date Range:")
+              print(f"  Back dates: {back_dates[0]} to {back_dates[-1]}")
+              print(f"  Today: {today_str}")
+              print(f"  Tomorrow: {tomorrow_str}")
+              
+              # Storage for merged data
+              merged_channels = OrderedDict()
+              merged_programmes = []
+              
+              stats = {
+                  'back_files': 0,
+                  'back_programmes': 0,
+                  'today_files': 0,
+                  'today_programmes': 0,
+                  'tomorrow_files': 0,
+                  'tomorrow_programmes': 0
+              }
+              
+              # Process back dates (filtered)
+              print("\n" + "=" * 60)
+              print("📂 PROCESSING BACK DATES (FILTERED CHANNELS)")
+              print("=" * 60)
+              
+              for date_str in back_dates:
+                  files = sorted(glob.glob(f"Epg/{date_str}-*.xml"))
+                  if not files:
+                      continue
+                  
+                  print(f"\n  {date_str}: {len(files)} file(s)")
+                  
+                  for file_path in files:
+                      try:
+                          with open(file_path, 'r', encoding='utf-8') as f:
+                              content = f.read()
+                          
+                          channels, programmes = parse_epg_content(content)
+                          stats['back_files'] += 1
+                          
+                          # Add only selected channels
+                          for ch_id in channel_ids:
+                              if ch_id in channels:
+                                  if ch_id not in merged_channels:
+                                      merged_channels[ch_id] = channels[ch_id]
+                                      print(f"    ✓ Added channel {ch_id}")
+                                  
+                                  # Add programmes for this channel
+                                  for prog in programmes:
+                                      if prog['channel'] == ch_id:
+                                          merged_programmes.append(prog)
+                                          stats['back_programmes'] += 1
+                          
+                          print(f"    ✓ Processed {os.path.basename(file_path)}")
+                      except Exception as e:
+                          print(f"    ✗ Error: {e}")
+              
+              # Process today (all channels)
+              print("\n" + "=" * 60)
+              print("📂 PROCESSING TODAY (ALL CHANNELS)")
+              print("=" * 60)
+              
+              today_files = sorted(glob.glob(f"Epg/{today_str}-*.xml"))
+              if today_files:
+                  for file_path in today_files:
+                      try:
+                          with open(file_path, 'r', encoding='utf-8') as f:
+                              content = f.read()
+                          
+                          channels, programmes = parse_epg_content(content)
+                          stats['today_files'] += 1
+                          
+                          # Add all channels
+                          for ch_id, ch_xml in channels.items():
+                              if ch_id not in merged_channels:
+                                  merged_channels[ch_id] = ch_xml
+                          
+                          # Add all programmes
+                          for prog in programmes:
+                              merged_programmes.append(prog)
+                              stats['today_programmes'] += 1
+                          
+                          print(f"    ✓ Processed {os.path.basename(file_path)}")
+                          print(f"      Added {len(channels)} channels, {len(programmes)} programmes")
+                      except Exception as e:
+                          print(f"    ✗ Error: {e}")
+              else:
+                  print(f"  ⚠️ No files found for today")
+              
+              # Process tomorrow (all channels)
+              print("\n" + "=" * 60)
+              print("📂 PROCESSING TOMORROW (ALL CHANNELS)")
+              print("=" * 60)
+              
+              tomorrow_files = sorted(glob.glob(f"Epg/{tomorrow_str}-*.xml"))
+              if tomorrow_files:
+                  for file_path in tomorrow_files:
+                      try:
+                          with open(file_path, 'r', encoding='utf-8') as f:
+                              content = f.read()
+                          
+                          channels, programmes = parse_epg_content(content)
+                          stats['tomorrow_files'] += 1
+                          
+                          # Add all channels
+                          for ch_id, ch_xml in channels.items():
+                              if ch_id not in merged_channels:
+                                  merged_channels[ch_id] = ch_xml
+                          
+                          # Add all programmes
+                          for prog in programmes:
+                              merged_programmes.append(prog)
+                              stats['tomorrow_programmes'] += 1
+                          
+                          print(f"    ✓ Processed {os.path.basename(file_path)}")
+                          print(f"      Added {len(channels)} channels, {len(programmes)} programmes")
+                      except Exception as e:
+                          print(f"    ✗ Error: {e}")
+              else:
+                  print(f"  ⚠️ No files found for tomorrow")
+              
+              # Generate output
+              print("\n" + "=" * 60)
+              print("📝 GENERATING OUTPUT")
+              print("=" * 60)
+              
+              if not merged_programmes:
+                  print("❌ ERROR: No programmes found!")
+                  sys.exit(1)
+              
+              # Sort programmes by start time
+              merged_programmes.sort(key=lambda x: x['start'])
+              
+              # Build final XML
+              xml_lines = []
+              xml_lines.append('<?xml version="1.0" encoding="UTF-8"?>')
+              xml_lines.append('<tv>')
+              
+              # Add channels
+              for ch_xml in merged_channels.values():
+                  xml_lines.append(ch_xml)
+              
+              # Add programmes
+              for prog in merged_programmes:
+                  xml_lines.append(prog['xml'])
+              
+              # Close TV tag
+              xml_lines.append('</tv>')
+              
+              # Write output file
+              output = '\n'.join(xml_lines)
+              
+              with open('Epg.xml', 'w', encoding='utf-8') as f:
+                  f.write(output)
+              
+              # Compress
+              with open('Epg.xml', 'rb') as f_in:
+                  with gzip.open('Epg.xml.gz', 'wb', compresslevel=9) as f_out:
+                      f_out.write(f_in.read())
+              
+              # Print summary
+              print(f"\n{'=' * 60}")
+              print("✅ MERGE SUMMARY")
+              print(f"{'=' * 60}")
+              print(f"Back dates (filtered):")
+              print(f"  Files: {stats['back_files']}")
+              print(f"  Programmes: {stats['back_programmes']}")
+              print(f"  Channels: {len([ch for ch in merged_channels if ch in channel_ids])}")
+              
+              print(f"\nToday (all channels):")
+              print(f"  Files: {stats['today_files']}")
+              print(f"  Programmes: {stats['today_programmes']}")
+              
+              print(f"\nTomorrow (all channels):")
+              print(f"  Files: {stats['tomorrow_files']}")
+              print(f"  Programmes: {stats['tomorrow_programmes']}")
+              
+              print(f"\nTotal:")
+              print(f"  Channels: {len(merged_channels)}")
+              print(f"  Programmes: {len(merged_programmes)}")
+              print(f"  File size: {os.path.getsize('Epg.xml.gz'):,} bytes")
+              
+              # Validation
+              print(f"\n🔍 Validation:")
+              print(f"  XML declaration: {'✓' if output.startswith('<?xml') else '✗'}")
+              print(f"  <tv> tag: {'✓' if '<tv>' in output else '✗'}")
+              print(f"  </tv> tag: {'✓' if '</tv>' in output else '✗'}")
+              print(f"  Programme blocks: {output.count('<programme')}")
+              print(f"  Channel blocks: {output.count('<channel')}")
+              
+              # Check for duplicate channels
+              channel_count_check = len(re.findall(r'<channel id="([^"]+)"', output))
+              unique_channels = len(set(re.findall(r'<channel id="([^"]+)"', output)))
+              if channel_count_check == unique_channels:
+                  print(f"  No duplicate channels: ✓")
+              else:
+                  print(f"  ⚠️ Duplicate channels found: {channel_count_check - unique_channels}")
+
+          if __name__ == "__main__":
+              main()
+          PYTHON_EOF
           
-          # Remove old compressed file
-          rm -f Epg.xml.gz
-          
-          # Compress with maximum compression
-          gzip -9 Epg.xml
-          
-          if [ -f Epg.xml.gz ]; then
-            echo "✓ Compression successful!"
-            echo "Compressed size: $(du -h Epg.xml.gz | cut -f1)"
-          else
-            echo "❌ ERROR: Compression failed!"
-            exit 1
-          fi
+          python3 merge_epg.py
 
       - name: Commit and Push
         run: |
-          echo "=== Committing Changes ==="
-          
-          if [ ! -f Epg.xml.gz ]; then
-            echo "❌ ERROR: Epg.xml.gz not found!"
+          if [ -f Epg.xml.gz ]; then
+            # Clean up temporary files
+            rm -f merge_epg.py Epg.xml
+            
+            # Configure git
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            
+            # Stage the compressed file
+            git add Epg.xml.gz
+            
+            # Check if there are changes
+            if git diff --cached --quiet; then
+              echo "ℹ️ No changes to commit"
+            else
+              git commit -m "Auto update EPG: $(date +%Y-%m-%d_%H-%M) [skip ci]"
+              git push
+              echo "✓ Successfully pushed!"
+            fi
+            
+            echo ""
+            echo "Final output:"
+            ls -lh Epg.xml.gz
+          else
+            echo "❌ ERROR: Epg.xml.gz was not created!"
             exit 1
           fi
-          
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Stage the compressed file
-          git add Epg.xml.gz
-          
-          # Check if there are changes
-          if git diff --cached --quiet; then
-            echo "ℹ️ No changes detected (file is identical to previous version)"
-          else
-            # Create commit with timestamp
-            commit_message="Auto update EPG: $(date '+%Y-%m-%d %H:%M UTC') [skip ci]"
-            git commit -m "$commit_message"
-            git push
-            echo "✓ Successfully committed and pushed!"
-          fi
-          
-          # Show final status
-          echo "=== Final Status ==="
-          git log --oneline -1
-          echo "Epg.xml.gz size: $(du -h Epg.xml.gz | cut -f1)"
