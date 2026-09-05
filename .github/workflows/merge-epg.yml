@@ -1,0 +1,149 @@
+name: Merge Dynamic EPG Files
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'  # Every 2 hours
+  push:
+    paths:
+      - 'Epg/*.xml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  merge-epg-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Display EPG files
+        run: |
+          echo "=== EPG Files in Repository ==="
+          find Epg/ -name "*.xml" -type f -size +0 | sort || echo "No EPG files found!"
+          echo "Total files: $(find Epg/ -name '*.xml' -type f -size +0 | wc -l)"
+          
+          if [ -f Epg.xml.gz ]; then
+            echo "Existing Epg.xml.gz size: $(du -h Epg.xml.gz | cut -f1)"
+          fi
+
+      - name: Merge EPG Files
+        run: |
+          set -e  # Exit on error
+          
+          # Clean up any existing temp files
+          rm -f temp_merged.xml Epg.xml
+          
+          # Calculate dates
+          echo "=== Calculating Date Range ==="
+          dates_to_merge=()
+          
+          # Previous 9 days (from oldest to newest)
+          for i in $(seq 9 -1 1); do
+            dates_to_merge+=("$(date -d "-$i days" +%Y-%m-%d)")
+          done
+          
+          # Today
+          dates_to_merge+=("$(date +%Y-%m-%d)")
+          
+          # Tomorrow
+          dates_to_merge+=("$(date -d "+1 day" +%Y-%m-%d)")
+          
+          echo "Date range: ${dates_to_merge[0]} to ${dates_to_merge[-1]}"
+          echo "Total days to process: ${#dates_to_merge[@]}"
+          
+          # Merge files
+          echo "=== Merging Files ==="
+          total_files=0
+          
+          for date_val in "${dates_to_merge[@]}"; do
+            echo ""
+            echo "--- Processing $date_val ---"
+            
+            # Find all files for this date (sorted)
+            mapfile -t day_files < <(find Epg/ -name "${date_val}-*.xml" -type f -size +0 | sort)
+            
+            if [ ${#day_files[@]} -gt 0 ]; then
+              echo "Found ${#day_files[@]} file(s):"
+              for file in "${day_files[@]}"; do
+                file_size=$(du -h "$file" | cut -f1)
+                echo "  ✓ $file ($file_size)"
+                cat "$file" >> temp_merged.xml
+                total_files=$((total_files + 1))
+              done
+            else
+              echo "  ✗ No files found for $date_val"
+            fi
+          done
+          
+          echo ""
+          echo "=== Merge Summary ==="
+          echo "Total files merged: $total_files"
+          
+          if [ $total_files -eq 0 ]; then
+            echo "❌ ERROR: No files were merged!"
+            exit 1
+          fi
+          
+          # Move temp file to final name
+          mv temp_merged.xml Epg.xml
+          
+          echo "✓ Merged file created:"
+          ls -lh Epg.xml
+          echo "Lines: $(wc -l < Epg.xml)"
+
+      - name: Compress EPG
+        run: |
+          echo "=== Compressing ==="
+          if [ ! -f Epg.xml ]; then
+            echo "❌ ERROR: Epg.xml not found!"
+            exit 1
+          fi
+          
+          # Remove old compressed file
+          rm -f Epg.xml.gz
+          
+          # Compress with maximum compression
+          gzip -9 Epg.xml
+          
+          if [ -f Epg.xml.gz ]; then
+            echo "✓ Compression successful!"
+            echo "Compressed size: $(du -h Epg.xml.gz | cut -f1)"
+          else
+            echo "❌ ERROR: Compression failed!"
+            exit 1
+          fi
+
+      - name: Commit and Push
+        run: |
+          echo "=== Committing Changes ==="
+          
+          if [ ! -f Epg.xml.gz ]; then
+            echo "❌ ERROR: Epg.xml.gz not found!"
+            exit 1
+          fi
+          
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Stage the compressed file
+          git add Epg.xml.gz
+          
+          # Check if there are changes
+          if git diff --cached --quiet; then
+            echo "ℹ️ No changes detected (file is identical to previous version)"
+          else
+            # Create commit with timestamp
+            commit_message="Auto update EPG: $(date '+%Y-%m-%d %H:%M UTC') [skip ci]"
+            git commit -m "$commit_message"
+            git push
+            echo "✓ Successfully committed and pushed!"
+          fi
+          
+          # Show final status
+          echo "=== Final Status ==="
+          git log --oneline -1
+          echo "Epg.xml.gz size: $(du -h Epg.xml.gz | cut -f1)"
