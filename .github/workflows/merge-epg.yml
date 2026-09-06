@@ -6,7 +6,7 @@ on:
   push:
     paths:
       - 'Epg/*.xml'
-      - 'channels.txt'
+      - '*hannels.txt'  # Triggers on channels.txt OR Channels.txt
   workflow_dispatch:
 
 permissions:
@@ -38,45 +38,49 @@ jobs:
           from collections import OrderedDict
 
           def read_channel_ids():
-              """Read channel IDs from channels.txt formatted as [ "Ch1", "Ch2" ]"""
+              """Bulletproof reader for channels.txt or Channels.txt"""
               channel_ids = []
+              
+              # Check for both lowercase and uppercase variations (Linux is case-sensitive)
+              file_path = None
               if os.path.exists('channels.txt'):
-                  with open('channels.txt', 'r', encoding='utf-8') as f:
+                  file_path = 'channels.txt'
+              elif os.path.exists('Channels.txt'):
+                  file_path = 'Channels.txt'
+                  
+              if file_path:
+                  print(f"  ✓ Found file: {file_path}")
+                  with open(file_path, 'r', encoding='utf-8') as f:
                       content = f.read()
                   
-                  # Look for content inside [ ]
-                  match = re.search(r'\[(.*?)\]', content, re.DOTALL)
-                  if match:
-                      array_content = match.group(1)
-                      # Extract everything inside double quotes. 
-                      # This bypasses the need for commas, meaning if a comma is missing, it still works perfectly!
-                      channel_ids = re.findall(r'"([^"]+)"', array_content)
+                  # Highly aggressive extraction: 
+                  # Grabs anything inside double quotes, ignoring brackets and missing commas
+                  extracted_ids = re.findall(r'"([^"]+)"', content)
+                  
+                  if extracted_ids:
+                      channel_ids = extracted_ids
                   else:
-                      # Fallback: Just grab any quoted strings in the file
-                      channel_ids = re.findall(r'"([^"]+)"', content)
-                      
-                      # Final fallback: line by line
-                      if not channel_ids:
-                          for line in content.split('\n'):
-                              line = line.strip()
-                              if line and not line.startswith('#') and not line.startswith('[') and not line.startswith(']'):
-                                  channel_ids.append(line)
-              
-              # Strip whitespace and remove empty strings
+                      # Fallback: Just read line by line, stripping brackets and quotes
+                      for line in content.splitlines():
+                          clean_line = re.sub(r'[\[\]",]', '', line).strip()
+                          if clean_line:
+                              channel_ids.append(clean_line)
+              else:
+                  print("  ⚠️ Could not find channels.txt or Channels.txt in the repository!")
+
+              # Clean whitespace
               cleaned_ids = [c.strip() for c in channel_ids if c.strip()]
               
-              # Default channels if file not found or empty
               if not cleaned_ids:
+                  print("  ⚠️ No channels parsed. Falling back to defaults.")
                   cleaned_ids = ["951", "952", "953"]
               
               return cleaned_ids
 
           def parse_epg_content(content):
-              """Parse EPG XML content and extract channels and programmes"""
               channels = OrderedDict()
               programmes = []
               
-              # Extract all channel blocks
               channel_pattern = r'<channel id="([^"]+)"[^>]*>(.*?)</channel>'
               for match in re.finditer(channel_pattern, content, re.DOTALL):
                   channel_id = match.group(1)
@@ -84,7 +88,6 @@ jobs:
                   if channel_id not in channels:
                       channels[channel_id] = channel_xml
               
-              # Extract all programme blocks
               programme_pattern = r'<programme[^>]*>(.*?)</programme>'
               for match in re.finditer(programme_pattern, content, re.DOTALL):
                   prog_xml = match.group(0)
@@ -100,47 +103,29 @@ jobs:
               return channels, programmes
 
           def optimize_xml_size(xml_content):
-              """Optimize XML for maximum compression"""
-              # Remove unnecessary whitespace between tags
               xml_content = re.sub(r'>\s+<', '><', xml_content)
-              
-              # Remove leading/trailing whitespace in text content
               xml_content = re.sub(r'>\s+', '>', xml_content)
               xml_content = re.sub(r'\s+<', '<', xml_content)
-              
-              # Remove empty lines
               xml_content = re.sub(r'\n\s*\n', '\n', xml_content)
-              
-              # Compact channel and programme tags
               xml_content = re.sub(r'\s+', ' ', xml_content)
-              
               return xml_content
 
           def write_compressed_file(xml_content, output_path):
-              """Write compressed file specifically using gzip"""
               optimized_xml = optimize_xml_size(xml_content)
               xml_bytes = optimized_xml.encode('utf-8')
-              
-              # IMPORTANT: mtime=0 ensures deterministic builds
               compressed_data = gzip.compress(xml_bytes, compresslevel=9, mtime=0)
               
               with open(output_path, 'wb') as f:
                   f.write(compressed_data)
               
               return {
-                  'method': 'gzip (Level 9)',
                   'original_size': len(xml_bytes),
                   'compressed_size': len(compressed_data)
               }
 
           def build_xml(channels, programmes):
-              """Build optimized XML content"""
-              # Sort programmes by start time
               programmes.sort(key=lambda x: x['start'])
-              
-              xml_parts = []
-              xml_parts.append('<?xml version="1.0" encoding="UTF-8"?>')
-              xml_parts.append('<tv>')
+              xml_parts = ['<?xml version="1.0" encoding="UTF-8"?>\n<tv>']
               
               for ch_xml in channels.values():
                   xml_parts.append(re.sub(r'\s+', ' ', ch_xml.strip()))
@@ -153,38 +138,43 @@ jobs:
 
           def main():
               print("=" * 70)
-              print("EPG SMART MERGER - STANDARD GZIP COMPRESSION")
+              print("EPG SMART MERGER - 9 DAYS CATCHUP (DEBUG MODE)")
               print("=" * 70)
               
-              # Read channel IDs
               channel_ids = read_channel_ids()
-              print(f"\n✓ Loaded {len(channel_ids)} channel IDs for Catchup (back dates):")
-              for ch_id in channel_ids[:10]:
-                  print(f"  • {ch_id}")
-              if len(channel_ids) > 10:
-                  print(f"  • ... and {len(channel_ids) - 10} more")
+              print(f"\n✓ Loaded {len(channel_ids)} catchup channels. Here is what was read:")
+              print(f"  {channel_ids}")
               
-              # Generate dates
+              # Strictly 9 days back
               today = datetime.now().date()
               back_dates = [(today - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(9, 0, -1)]
               today_str = today.strftime('%Y-%m-%d')
               tomorrow_str = (today + timedelta(days=1)).strftime('%Y-%m-%d')
               
-              # Dictionaries mapped by (channel_id, start_time) to ELIMINATE DUPLICATES
+              print(f"\n📅 Looking for Back Dates: {back_dates[0]} to {back_dates[-1]}")
+              
               full_channels = OrderedDict()
               full_programmes_dict = {} 
               
               live_channels = OrderedDict()
               live_programmes_dict = {} 
               
-              # 1. Process back dates (ONLY for channels inside [ ] in channels.txt)
+              # 1. Process back dates (9 days only)
               print("\n" + "=" * 70)
-              print("📂 PROCESSING BACK DATES (CATCHUP CHANNELS ONLY)")
+              print("📂 PROCESSING CATCHUP (9 DAYS BACK - SELECTED CHANNELS)")
               print("=" * 70)
               
+              catchup_files_found = 0
+              catchup_progs_added = 0
+              sample_xml_channels = set()
+              
               for date_str in back_dates:
-                  files = sorted(glob.glob(f"Epg/{date_str}-*.xml"))
-                  if not files: continue
+                  files = sorted(glob.glob(f"Epg/{date_str}*.xml"))
+                  if not files: 
+                      continue
+                  
+                  catchup_files_found += len(files)
+                  print(f"\n  📅 {date_str}: Found {len(files)} files")
                   
                   for file_path in files:
                       try:
@@ -192,8 +182,13 @@ jobs:
                               content = f.read()
                           
                           channels, programmes = parse_epg_content(content)
+                          added_from_this_file = 0
                           
-                          # Add ONLY Catchup channels
+                          # Store a few XML channel IDs to help debug if matching fails
+                          for cid in channels.keys():
+                              if len(sample_xml_channels) < 15:
+                                  sample_xml_channels.add(cid)
+                          
                           for ch_id in channel_ids:
                               if ch_id in channels:
                                   if ch_id not in full_channels:
@@ -203,21 +198,33 @@ jobs:
                                       if prog['channel'] == ch_id:
                                           prog_key = (prog['channel'], prog['start'])
                                           full_programmes_dict[prog_key] = prog
+                                          added_from_this_file += 1
+                                          catchup_progs_added += 1
+                          
+                          print(f"    ✓ {os.path.basename(file_path)} -> Added {added_from_this_file} catchup programmes")
                       except Exception as e:
-                          print(f"    ✗ Error: {e}")
+                          print(f"    ✗ Error reading {file_path}: {e}")
               
-              # 2. Process today (ALL CHANNELS)
+              if catchup_files_found == 0:
+                  print("\n  ⚠️ WARNING: NO files found in the 'Epg' folder for the last 9 days!")
+              elif catchup_progs_added == 0:
+                  print("\n  ⚠️ CRITICAL WARNING: Files were found, but 0 programmes were added!")
+                  print("  This means the channel names in your text file DO NOT MATCH the IDs in the XML files.")
+                  print(f"  Here are some channel IDs actually found inside your XML files for comparison:\n  {list(sample_xml_channels)}")
+              
+              # 2. Process today
               print("\n" + "=" * 70)
               print("📂 PROCESSING TODAY (ALL CHANNELS)")
               print("=" * 70)
               
-              today_files = sorted(glob.glob(f"Epg/{today_str}-*.xml"))
+              today_files = sorted(glob.glob(f"Epg/{today_str}*.xml"))
               for file_path in today_files:
                   try:
                       with open(file_path, 'r', encoding='utf-8') as f:
                           content = f.read()
                       
                       channels, programmes = parse_epg_content(content)
+                      print(f"  📅 {today_str}: {os.path.basename(file_path)} ({len(channels)} channels, {len(programmes)} programmes)")
                       
                       for ch_id, ch_xml in channels.items():
                           if ch_id not in full_channels: full_channels[ch_id] = ch_xml
@@ -231,18 +238,19 @@ jobs:
                   except Exception as e:
                       print(f"    ✗ Error: {e}")
               
-              # 3. Process tomorrow (ALL CHANNELS)
+              # 3. Process tomorrow
               print("\n" + "=" * 70)
               print("📂 PROCESSING TOMORROW (ALL CHANNELS)")
               print("=" * 70)
               
-              tomorrow_files = sorted(glob.glob(f"Epg/{tomorrow_str}-*.xml"))
+              tomorrow_files = sorted(glob.glob(f"Epg/{tomorrow_str}*.xml"))
               for file_path in tomorrow_files:
                   try:
                       with open(file_path, 'r', encoding='utf-8') as f:
                           content = f.read()
                       
                       channels, programmes = parse_epg_content(content)
+                      print(f"  📅 {tomorrow_str}: {os.path.basename(file_path)} ({len(channels)} channels, {len(programmes)} programmes)")
                       
                       for ch_id, ch_xml in channels.items():
                           if ch_id not in full_channels: full_channels[ch_id] = ch_xml
@@ -264,24 +272,23 @@ jobs:
               full_programmes = list(full_programmes_dict.values())
               live_programmes = list(live_programmes_dict.values())
 
-              # Build Full EPG
               if full_programmes:
                   print("\n📦 Building Full EPG (back dates + today + tomorrow)...")
-                  full_xml = build_xml(full_channels, full_programmes)
-                  full_result = write_compressed_file(full_xml, 'Epg.xml.gz')
+                  build_xml_content = build_xml(full_channels, full_programmes)
+                  write_compressed_file(build_xml_content, 'Epg.xml.gz')
                   print(f"  ✓ Full EPG compressed!")
               
-              # Build Live EPG (today + tomorrow only)
               if live_programmes:
                   print("\n📦 Building Live EPG (today + tomorrow only)...")
-                  live_xml = build_xml(live_channels, live_programmes)
-                  live_result = write_compressed_file(live_xml, 'LiveEpg.xml.gz')
+                  build_xml_content = build_xml(live_channels, live_programmes)
+                  write_compressed_file(build_xml_content, 'LiveEpg.xml.gz')
                   print(f"  ✓ Live EPG compressed!")
               
-              # Print summary
               print(f"\n{'=' * 70}")
               print("✅ MERGE SUMMARY")
               print(f"{'=' * 70}")
+              print(f"  Catchup Back-Date Files Found: {catchup_files_found}")
+              print(f"  Catchup Programmes Added: {catchup_progs_added}")
               
               if os.path.exists('Epg.xml.gz'):
                   size = os.path.getsize('Epg.xml.gz')
@@ -298,10 +305,8 @@ jobs:
 
       - name: Commit and Push
         run: |
-          # Clean up temporary files
           rm -f merge_epg.py Epg.xml LiveEpg.xml
           
-          # Check if files exist
           if [ -f Epg.xml.gz ] && [ -f LiveEpg.xml.gz ]; then
             git config --global user.name "github-actions[bot]"
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
