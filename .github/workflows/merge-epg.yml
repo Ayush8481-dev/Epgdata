@@ -38,31 +38,38 @@ jobs:
           from collections import OrderedDict
 
           def read_channel_ids():
-              """Read channel IDs from channels.txt file"""
+              """Read channel IDs from channels.txt formatted as [ "Ch1", "Ch2" ]"""
               channel_ids = []
               if os.path.exists('channels.txt'):
                   with open('channels.txt', 'r', encoding='utf-8') as f:
                       content = f.read()
                   
-                  # Extract channel IDs from format {id1, id2, id3}
-                  match = re.search(r'\{([^}]+)\}', content, re.DOTALL)
+                  # Look for content inside [ ]
+                  match = re.search(r'\[(.*?)\]', content, re.DOTALL)
                   if match:
-                      ids_str = match.group(1)
-                      # Split ONLY by comma (so channel IDs with spaces don't get broken apart)
-                      channel_ids = [x.strip() for x in ids_str.split(',') if x.strip()]
-                  
-                  # Also support one per line format
-                  if not channel_ids:
-                      for line in content.split('\n'):
-                          line = line.strip()
-                          if line and not line.startswith('#') and not line.startswith('{') and not line.startswith('}'):
-                              channel_ids.append(line)
+                      array_content = match.group(1)
+                      # Extract everything inside double quotes. 
+                      # This bypasses the need for commas, meaning if a comma is missing, it still works perfectly!
+                      channel_ids = re.findall(r'"([^"]+)"', array_content)
+                  else:
+                      # Fallback: Just grab any quoted strings in the file
+                      channel_ids = re.findall(r'"([^"]+)"', content)
+                      
+                      # Final fallback: line by line
+                      if not channel_ids:
+                          for line in content.split('\n'):
+                              line = line.strip()
+                              if line and not line.startswith('#') and not line.startswith('[') and not line.startswith(']'):
+                                  channel_ids.append(line)
+              
+              # Strip whitespace and remove empty strings
+              cleaned_ids = [c.strip() for c in channel_ids if c.strip()]
               
               # Default channels if file not found or empty
-              if not channel_ids:
-                  channel_ids = ["951", "952", "953"]
+              if not cleaned_ids:
+                  cleaned_ids = ["951", "952", "953"]
               
-              return channel_ids
+              return cleaned_ids
 
           def parse_epg_content(content):
               """Parse EPG XML content and extract channels and programmes"""
@@ -120,15 +127,10 @@ jobs:
               with open(output_path, 'wb') as f:
                   f.write(compressed_data)
               
-              original_size = len(xml_bytes)
-              compressed_size = len(compressed_data)
-              ratio = (1 - compressed_size / original_size) * 100 if original_size > 0 else 0
-              
               return {
                   'method': 'gzip (Level 9)',
-                  'original_size': original_size,
-                  'compressed_size': compressed_size,
-                  'ratio': ratio
+                  'original_size': len(xml_bytes),
+                  'compressed_size': len(compressed_data)
               }
 
           def build_xml(channels, programmes):
@@ -175,13 +177,7 @@ jobs:
               live_channels = OrderedDict()
               live_programmes_dict = {} 
               
-              stats = {
-                  'back_files': 0, 'back_programmes_parsed': 0,
-                  'today_files': 0, 'today_programmes_parsed': 0,
-                  'tomorrow_files': 0, 'tomorrow_programmes_parsed': 0
-              }
-              
-              # 1. Process back dates (ONLY for channels inside { } in channels.txt)
+              # 1. Process back dates (ONLY for channels inside [ ] in channels.txt)
               print("\n" + "=" * 70)
               print("📂 PROCESSING BACK DATES (CATCHUP CHANNELS ONLY)")
               print("=" * 70)
@@ -196,7 +192,6 @@ jobs:
                               content = f.read()
                           
                           channels, programmes = parse_epg_content(content)
-                          stats['back_files'] += 1
                           
                           # Add ONLY Catchup channels
                           for ch_id in channel_ids:
@@ -208,7 +203,6 @@ jobs:
                                       if prog['channel'] == ch_id:
                                           prog_key = (prog['channel'], prog['start'])
                                           full_programmes_dict[prog_key] = prog
-                                          stats['back_programmes_parsed'] += 1
                       except Exception as e:
                           print(f"    ✗ Error: {e}")
               
@@ -224,7 +218,6 @@ jobs:
                           content = f.read()
                       
                       channels, programmes = parse_epg_content(content)
-                      stats['today_files'] += 1
                       
                       for ch_id, ch_xml in channels.items():
                           if ch_id not in full_channels: full_channels[ch_id] = ch_xml
@@ -234,7 +227,6 @@ jobs:
                           prog_key = (prog['channel'], prog['start'])
                           full_programmes_dict[prog_key] = prog
                           live_programmes_dict[prog_key] = prog
-                          stats['today_programmes_parsed'] += 1
                           
                   except Exception as e:
                       print(f"    ✗ Error: {e}")
@@ -251,7 +243,6 @@ jobs:
                           content = f.read()
                       
                       channels, programmes = parse_epg_content(content)
-                      stats['tomorrow_files'] += 1
                       
                       for ch_id, ch_xml in channels.items():
                           if ch_id not in full_channels: full_channels[ch_id] = ch_xml
@@ -261,7 +252,6 @@ jobs:
                           prog_key = (prog['channel'], prog['start'])
                           full_programmes_dict[prog_key] = prog
                           live_programmes_dict[prog_key] = prog
-                          stats['tomorrow_programmes_parsed'] += 1
                           
                   except Exception as e:
                       print(f"    ✗ Error: {e}")
