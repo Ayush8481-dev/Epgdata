@@ -1,7 +1,8 @@
-name: Jarvis@8481 EPG Smart
+name: Merge EPG Smart
+
 on:
   schedule:
-    - cron: '0 */6 * * *'  # This runs at minute 0 of every 2nd hour# Every 15 minutes  
+    - cron: '0 */2 * * *'  # Every 2 hours
   push:
     paths:
       - 'Epg/*.xml'
