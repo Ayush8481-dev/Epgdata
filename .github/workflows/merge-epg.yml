@@ -110,15 +110,16 @@ jobs:
               live_channels = OrderedDict()
               live_programmes_dict = {} 
               
-              # 1. Process Catchup files (Day0Catchup to Day9Catchup) -> FULL EPG ONLY
+              # 1. Process Catchup files (Day0Catchup to Day6Catchup) -> FULL EPG ONLY
               print("\n" + "=" * 70)
-              print("📂 PROCESSING CATCHUP (ALL CHANNELS FROM DAY 0 TO 9)")
+              print("📂 PROCESSING CATCHUP (ALL CHANNELS FROM DAY 0 TO 6)")
               print("=" * 70)
               
               catchup_files_found = 0
               catchup_progs_added = 0
               
-              for i in range(10):
+              # Strictly 7 days (0 through 6)
+              for i in range(7):
                   filename = f"Day{i}Catchup.xml"
                   # Bulletproof check for both repo root or inside Epg/ directory
                   path_in_epg = os.path.join("Epg", filename)
@@ -234,7 +235,7 @@ jobs:
               print(f"\n{'=' * 70}")
               print("✅ MERGE SUMMARY")
               print(f"{'=' * 70}")
-              print(f"  Catchup Files Found: {catchup_files_found}/10")
+              print(f"  Catchup Files Found: {catchup_files_found}/7")
               print(f"  Catchup Programmes Added: {catchup_progs_added}")
               print(f"  Live Programmes Total: {len(live_programmes)}")
               print(f"  Full Programmes Total: {len(full_programmes)}")
