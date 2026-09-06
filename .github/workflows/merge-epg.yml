@@ -34,13 +34,8 @@ jobs:
           import re
           import glob
           import gzip
-          import lzma
-          import bz2
-          import zlib
           from datetime import datetime, timedelta
           from collections import OrderedDict
-          from xml.dom import minidom
-          import xml.etree.ElementTree as ET
 
           def read_channel_ids():
               """Read channel IDs from channels.txt file"""
@@ -114,38 +109,18 @@ jobs:
               
               return xml_content
 
-          def compress_with_best_method(data):
-              """Try different compression methods and return the smallest"""
-              methods = {}
-              
-              # GZIP with different levels
-              for level in [9]:
-                  methods[f'gzip_{level}'] = gzip.compress(data, compresslevel=level, mtime=0)
-              
-              # BZ2
-              methods['bz2'] = bz2.compress(data, compresslevel=9)
-              
-              # LZMA/XZ
-              methods['xz'] = lzma.compress(data, preset=9 | lzma.PRESET_EXTREME)
-              
-              # ZLIB
-              methods['zlib'] = zlib.compress(data, level=9)
-              
-              # Find best compression
-              best_method = min(methods.items(), key=lambda x: len(x[1]))
-              
-              return best_method[0], best_method[1]
-
           def write_compressed_file(xml_content, output_path):
-              """Write compressed file with best compression method"""
+              """Write compressed file specifically using gzip"""
               # Optimize XML first
               optimized_xml = optimize_xml_size(xml_content)
               
               # Convert to bytes
               xml_bytes = optimized_xml.encode('utf-8')
               
-              # Get best compression
-              method, compressed_data = compress_with_best_method(xml_bytes)
+              # IMPORTANT: We must strictly use GZIP to keep the file extension (.gz) valid.
+              # mtime=0 ensures that deterministic output is generated (no changing timestamps)
+              # so git won't falsely detect a file change if the content is identical.
+              compressed_data = gzip.compress(xml_bytes, compresslevel=9, mtime=0)
               
               # Write compressed file
               with open(output_path, 'wb') as f:
@@ -154,10 +129,10 @@ jobs:
               # Calculate compression ratio
               original_size = len(xml_bytes)
               compressed_size = len(compressed_data)
-              ratio = (1 - compressed_size / original_size) * 100
+              ratio = (1 - compressed_size / original_size) * 100 if original_size > 0 else 0
               
               return {
-                  'method': method,
+                  'method': 'gzip (Level 9)',
                   'original_size': original_size,
                   'compressed_size': compressed_size,
                   'ratio': ratio
@@ -191,7 +166,7 @@ jobs:
 
           def main():
               print("=" * 70)
-              print("EPG SMART MERGER - MAXIMUM COMPRESSION")
+              print("EPG SMART MERGER - STANDARD GZIP COMPRESSION")
               print("=" * 70)
               
               # Read channel IDs
