@@ -1,8 +1,7 @@
 name: Jarvis@8481 EPG Smart
-
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Every 15 minutes  
+    - cron: '0 */6 * * *'  # This runs at minute 0 of every 2nd hour# Every 15 minutes  
   push:
     paths:
       - 'Epg/*.xml'
