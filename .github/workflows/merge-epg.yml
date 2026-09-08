@@ -1,11 +1,9 @@
 name: Merge EPG Smart
 
 on:
-  schedule:
-    # GitHub Actions uses UTC. IST is UTC+5:30
-    - cron: '30 18 * * *'  # Runs at 12:00 AM IST (midnight)
-    - cron: '30 3 * * *'   # Runs at 9:00 AM IST
-    - cron: '0 9 * * *'    # Runs at 2:30 PM IST
+  push:
+    paths:
+      - 'update.json'  # Triggers ONLY when update.json is modified and pushed
   workflow_dispatch:
 
 permissions:
