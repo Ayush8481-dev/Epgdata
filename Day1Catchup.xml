@@ -1839,29 +1839,4 @@
   <channel id="3530">
     <display-name>UIPM Pentathlon World Cup</display-name>
   </channel>
-  <programme start="20260912000000 +0530" stop="20260912030000 +0530" channel="809">
-    <title>Takat Vati</title>
-    <desc>The host introduces the benefits of an ancient ayurvedic remedy that helps ease digestive issues and enhances overall gut health.</desc>
-    <category>Series</category>
-  </programme>
-  <programme start="20260912030000 +0530" stop="20260912080000 +0530" channel="809">
-    <title>Takat Vati</title>
-    <desc>The host introduces the benefits of an ancient ayurvedic remedy that helps ease digestive issues and enhances overall gut health.</desc>
-    <category>Series</category>
-  </programme>
-  <programme start="20260912080000 +0530" stop="20260912153000 +0530" channel="809">
-    <title>Takat Vati</title>
-    <desc>The host introduces the benefits of an ancient ayurvedic remedy that helps ease digestive issues and enhances overall gut health.</desc>
-    <category>Series</category>
-  </programme>
-  <programme start="20260912153000 +0530" stop="20260912230000 +0530" channel="809">
-    <title>Takat Vati</title>
-    <desc>The host introduces the benefits of an ancient ayurvedic remedy that helps ease digestive issues and enhances overall gut health.</desc>
-    <category>Series</category>
-  </programme>
-  <programme start="20260912230000 +0530" stop="20260912235959 +0530" channel="809">
-    <title>Takat Vati</title>
-    <desc>The host introduces the benefits of an ancient ayurvedic remedy that helps ease digestive issues and enhances overall gut health.</desc>
-    <category>Series</category>
-  </programme>
 </tv>
