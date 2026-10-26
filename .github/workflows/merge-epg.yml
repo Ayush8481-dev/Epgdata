@@ -33,47 +33,40 @@ jobs:
           import urllib.request
           from datetime import datetime, timedelta, timezone
 
+          def unescape_xml(text):
+              if not text: return ""
+              return text.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&').replace('&apos;', "'").replace('&quot;', '"')
+
           def parse_epg_content(content):
               channels = {}
               programmes = []
               
-              channel_pattern = r'<channel\s+id="([^"]+)"[^>]*>.*?</channel>'
-              for match in re.finditer(channel_pattern, content, re.DOTALL):
-                  channel_id = match.group(1)
-                  if channel_id not in channels:
-                      channels[channel_id] = match.group(0)
+              # ULTRA-SAFE SPLIT METHOD FOR CHANNELS (Preserves exact XML formation)
+              channel_blocks = content.split('</channel>')
+              for block in channel_blocks[:-1]:
+                  start_idx = block.find('<channel ')
+                  if start_idx != -1:
+                      full_block = block[start_idx:] + '</channel>'
+                      id_match = re.search(r'<channel[^>]+id="([^"]+)"', full_block)
+                      if id_match:
+                          channels[id_match.group(1)] = full_block.strip()
               
-              programme_pattern = r'<programme\s+[^>]*>.*?</programme>'
-              for match in re.finditer(programme_pattern, content, re.DOTALL):
-                  prog_xml = match.group(0)
-                  channel_match = re.search(r'channel="([^"]+)"', prog_xml)
-                  if channel_match:
-                      start_match = re.search(r'start="([^"]+)"', prog_xml)
-                      programmes.append({
-                          'channel': channel_match.group(1),
-                          'xml': prog_xml,
-                          'start': start_match.group(1) if start_match else ''
-                      })
+              # ULTRA-SAFE SPLIT METHOD FOR PROGRAMMES (Preserves exact XML formation)
+              prog_blocks = content.split('</programme>')
+              for block in prog_blocks[:-1]:
+                  start_idx = block.find('<programme ')
+                  if start_idx != -1:
+                      full_block = block[start_idx:] + '</programme>'
+                      channel_match = re.search(r'channel="([^"]+)"', full_block)
+                      start_match = re.search(r'start="([^"]+)"', full_block)
+                      if channel_match:
+                          programmes.append({
+                              'channel': channel_match.group(1),
+                              'xml': full_block.strip(),
+                              'start': start_match.group(1) if start_match else ''
+                          })
               
               return channels, programmes
-
-          def format_xml_block(xml_string):
-              # 1. Clean up random/bad spacing from original source files
-              xml_string = re.sub(r'>\s+<', '><', xml_string.strip())
-              
-              # 2. Force standardized line breaks for SAX Parsers
-              xml_string = xml_string.replace('><', '>\n<')
-              
-              # 3. Apply perfect 2-space and 4-space indentation exactly like your sample
-              lines = xml_string.split('\n')
-              formatted_lines = []
-              for i, line in enumerate(lines):
-                  if i == 0 or i == len(lines) - 1:
-                      formatted_lines.append("  " + line)
-                  else:
-                      formatted_lines.append("    " + line)
-                      
-              return '\n'.join(formatted_lines)
 
           def write_compressed_file(xml_content, output_path):
               xml_bytes = xml_content.encode('utf-8')
@@ -95,15 +88,15 @@ jobs:
                   '<tv generator-info-name="SmartEPG">'
               ]
               
-              # Inject perfectly formatted Channel blocks first
+              # Inject Channel blocks exactly as they were formatted
               for ch_id in sorted_channel_ids:
-                  xml_parts.append(format_xml_block(channels[ch_id]))
+                  xml_parts.append(channels[ch_id])
               
-              # Inject perfectly formatted Programme blocks next
+              # Inject Programme blocks exactly as they were formatted
               for prog in programmes:
-                  xml_parts.append(format_xml_block(prog['xml']))
+                  xml_parts.append(prog['xml'])
               
-              xml_parts.append('</tv>\n')
+              xml_parts.append('</tv>')
               
               return '\n'.join(xml_parts)
 
@@ -187,13 +180,13 @@ jobs:
                           print(f"    ✗ Error reading {file_path}: {e}")
               
               # ==========================================
-              # 🔄 SAMSUNG TV PLUS EPG MERGE
+              # 🔄 SAMSUNG TV PLUS EPG MERGE (ULTRA-SAFE)
               # ==========================================
               print("\n🌐 Fetching Samsung TV Plus EPG...")
               try:
                   req = urllib.request.Request(
                       'https://raw.githubusercontent.com/matthuisman/i.mjh.nz/refs/heads/master/SamsungTVPlus/in.xml',
-                      headers={'User-Agent': 'Mozilla/5.0'}
+                      headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
                   )
                   with urllib.request.urlopen(req) as response:
                       samsung_content = response.read().decode('utf-8')
@@ -206,15 +199,15 @@ jobs:
                       for ch_xml in full_channels.values():
                           match = re.search(name_pattern, ch_xml)
                           if match:
-                              existing_names.add(match.group(1).strip())
+                              existing_names.add(unescape_xml(match.group(1).strip()))
                       
                       skipped_sam_ids = set()
                       added_sam_channels = 0
                       
-                      # Safely extract and filter channels
+                      # Extract and filter channels
                       for ch_id, ch_xml in sam_channels.items():
                           match = re.search(name_pattern, ch_xml)
-                          name = match.group(1).strip() if match else ""
+                          name = unescape_xml(match.group(1).strip()) if match else ""
                           
                           if name in existing_names or ch_id in full_channels:
                               skipped_sam_ids.add(ch_id)
@@ -225,7 +218,7 @@ jobs:
                       
                       added_sam_progs = 0
                       
-                      # Safely extract and filter programmes
+                      # Extract and filter programmes
                       for prog in sam_programmes:
                           if prog['channel'] not in skipped_sam_ids:
                               prog_key = (prog['channel'], prog['start'])
