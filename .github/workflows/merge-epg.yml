@@ -3,7 +3,7 @@ name: Merge EPG Smart
 on:
   push:
     paths:
-      - 'update.json'  # Triggers ONLY when update.json is modified and pushed
+      - 'update.json'  # Triggers ONLY when update.json is modified and pushd
   workflow_dispatch:
 
 permissions:
