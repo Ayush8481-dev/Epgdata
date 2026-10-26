@@ -41,7 +41,7 @@ jobs:
               channels = {}
               programmes = []
               
-              # ULTRA-SAFE SPLIT METHOD FOR CHANNELS (Preserves exact XML formation)
+              # ULTRA-SAFE SPLIT METHOD FOR CHANNELS (Preserves exact XML formation without breaking nested tags)
               channel_blocks = content.split('</channel>')
               for block in channel_blocks[:-1]:
                   start_idx = block.find('<channel ')
@@ -51,7 +51,7 @@ jobs:
                       if id_match:
                           channels[id_match.group(1)] = full_block.strip()
               
-              # ULTRA-SAFE SPLIT METHOD FOR PROGRAMMES (Preserves exact XML formation)
+              # ULTRA-SAFE SPLIT METHOD FOR PROGRAMMES
               prog_blocks = content.split('</programme>')
               for block in prog_blocks[:-1]:
                   start_idx = block.find('<programme ')
@@ -96,7 +96,7 @@ jobs:
               for prog in programmes:
                   xml_parts.append(prog['xml'])
               
-              xml_parts.append('</tv>')
+              xml_parts.append('</tv>\n')
               
               return '\n'.join(xml_parts)
 
@@ -166,11 +166,17 @@ jobs:
                           print(f"  📅 {file_date_str} [{tag}]: {filename} ({len(programmes)} programmes)")
                           
                           for ch_id, ch_xml in channels.items():
+                              # PURGE OLD FRAGMENTED SAMSUNG CHANNELS (JioTV IDs are purely numeric)
+                              if not ch_id.isdigit():
+                                  continue 
                               full_channels[ch_id] = ch_xml
                               if is_live:
                                   live_channels[ch_id] = ch_xml
                           
                           for prog in programmes:
+                              # PURGE OLD FRAGMENTED SAMSUNG PROGRAMMES
+                              if not prog['channel'].isdigit():
+                                  continue
                               prog_key = (prog['channel'], prog['start'])
                               full_programmes_dict[prog_key] = prog
                               if is_live:
@@ -180,13 +186,13 @@ jobs:
                           print(f"    ✗ Error reading {file_path}: {e}")
               
               # ==========================================
-              # 🔄 SAMSUNG TV PLUS EPG MERGE (ULTRA-SAFE)
+              # 🔄 SAMSUNG TV PLUS EPG MERGE (FRESH DOWNLOAD)
               # ==========================================
               print("\n🌐 Fetching Samsung TV Plus EPG...")
               try:
                   req = urllib.request.Request(
                       'https://raw.githubusercontent.com/matthuisman/i.mjh.nz/refs/heads/master/SamsungTVPlus/in.xml',
-                      headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                      headers={'User-Agent': 'Mozilla/5.0'}
                   )
                   with urllib.request.urlopen(req) as response:
                       samsung_content = response.read().decode('utf-8')
@@ -204,7 +210,7 @@ jobs:
                       skipped_sam_ids = set()
                       added_sam_channels = 0
                       
-                      # Extract and filter channels
+                      # Safely extract and filter channels
                       for ch_id, ch_xml in sam_channels.items():
                           match = re.search(name_pattern, ch_xml)
                           name = unescape_xml(match.group(1).strip()) if match else ""
@@ -217,14 +223,28 @@ jobs:
                               added_sam_channels += 1
                       
                       added_sam_progs = 0
+                      valid_full_dates = catchup_dates.union(live_dates)
                       
-                      # Extract and filter programmes
+                      # Safely extract and correctly assign programmes by exact dates
                       for prog in sam_programmes:
                           if prog['channel'] not in skipped_sam_ids:
                               prog_key = (prog['channel'], prog['start'])
-                              full_programmes_dict[prog_key] = prog
-                              live_programmes_dict[prog_key] = prog
-                              added_sam_progs += 1
+                              
+                              prog_start = prog['start']
+                              if len(prog_start) >= 8:
+                                  prog_date_str = f"{prog_start[0:4]}-{prog_start[4:6]}-{prog_start[6:8]}"
+                                  
+                                  if prog_date_str in valid_full_dates:
+                                      full_programmes_dict[prog_key] = prog
+                                      added_sam_progs += 1
+                                  
+                                  # Only put in Live EPG if the date matches today/tomorrow!
+                                  if prog_date_str in live_dates:
+                                      live_programmes_dict[prog_key] = prog
+                              else:
+                                  full_programmes_dict[prog_key] = prog
+                                  live_programmes_dict[prog_key] = prog
+                                  added_sam_progs += 1
                       
                       print(f"  ✅ Merged Samsung EPG: Added {added_sam_channels} unique channels & {added_sam_progs} programmes.")
               except Exception as e:
