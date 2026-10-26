@@ -30,6 +30,7 @@ jobs:
           import re
           import glob
           import gzip
+          import urllib.request
           from datetime import datetime, timedelta, timezone
 
           def parse_epg_content(content):
@@ -185,6 +186,57 @@ jobs:
                       except Exception as e:
                           print(f"    ✗ Error reading {file_path}: {e}")
               
+              # ==========================================
+              # 🔄 SAMSUNG TV PLUS EPG MERGE
+              # ==========================================
+              print("\n🌐 Fetching Samsung TV Plus EPG...")
+              try:
+                  req = urllib.request.Request(
+                      'https://raw.githubusercontent.com/matthuisman/i.mjh.nz/refs/heads/master/SamsungTVPlus/in.xml',
+                      headers={'User-Agent': 'Mozilla/5.0'}
+                  )
+                  with urllib.request.urlopen(req) as response:
+                      samsung_content = response.read().decode('utf-8')
+                      sam_channels, sam_programmes = parse_epg_content(samsung_content)
+                      
+                      existing_names = set()
+                      name_pattern = r'<display-name[^>]*>(.*?)</display-name>'
+                      
+                      # Build Set of existing names to avoid duplicates
+                      for ch_xml in full_channels.values():
+                          match = re.search(name_pattern, ch_xml)
+                          if match:
+                              existing_names.add(match.group(1).strip())
+                      
+                      skipped_sam_ids = set()
+                      added_sam_channels = 0
+                      
+                      # Safely extract and filter channels
+                      for ch_id, ch_xml in sam_channels.items():
+                          match = re.search(name_pattern, ch_xml)
+                          name = match.group(1).strip() if match else ""
+                          
+                          if name in existing_names or ch_id in full_channels:
+                              skipped_sam_ids.add(ch_id)
+                          else:
+                              full_channels[ch_id] = ch_xml
+                              live_channels[ch_id] = ch_xml
+                              added_sam_channels += 1
+                      
+                      added_sam_progs = 0
+                      
+                      # Safely extract and filter programmes
+                      for prog in sam_programmes:
+                          if prog['channel'] not in skipped_sam_ids:
+                              prog_key = (prog['channel'], prog['start'])
+                              full_programmes_dict[prog_key] = prog
+                              live_programmes_dict[prog_key] = prog
+                              added_sam_progs += 1
+                      
+                      print(f"  ✅ Merged Samsung EPG: Added {added_sam_channels} unique channels & {added_sam_progs} programmes.")
+              except Exception as e:
+                  print(f"  ⚠️ Failed to merge Samsung EPG: {e}")
+
               # Build and write final outputs
               full_programmes = list(full_programmes_dict.values())
               live_programmes = list(live_programmes_dict.values())
